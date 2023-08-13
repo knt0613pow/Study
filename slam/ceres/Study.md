@@ -3,10 +3,12 @@ Ceres는 구글에서 개발한 오픈소스 C++  비선형 최적화 라이브�
 
 <p align="center">
     <img width="600" src="data/Non-linear_Least_Squares.png" alt="Non-linear_Least_Squares.png">
+    Non-linear_Least_Squares
 </p>
 
 <p align="center">
     <img width="600" src="data/unconstrained_non-linear_squares_problem.png" alt="unconstrained_non-linear_squares_problem.png">
+    unconstrained_non-linear_squares_problem
 </p>
 
 
