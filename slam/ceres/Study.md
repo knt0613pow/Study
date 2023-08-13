@@ -5,10 +5,15 @@ Ceres는 구글에서 개발한 오픈소스 C++  비선형 최적화 라이브�
   ![Non-Linear Least Squares.png](data/Non-linear_Least_Squares.png)
 </p>
 
+<center>
+    <img src="data/Non-linear_Least_Squares.png">
+</center>
+
 <p align="center">
   ![uncontrained Non-Linear Least Squares.png](data/unconstrained_non-linear_squares_problem.png)
 </p>
 
+![](data/Non-linear_Least_Squares.png)
 
 
 Ceres 는 1. Least Square Problem 모델링과 2. 최적화 알고리즘=Solver 로 구성된다. 만약 유저가 Ceres 를 사용하기 위해서는 다음 4개의 코드를 순서대로 작성해야 한다.
