@@ -81,13 +81,15 @@ private:
 imageProjection.cpp에서 사용하는 subscriber, publisher 입니다.
 
 
-|변수이름|sub/pub|topic type|topic name|callback|
-|------|---|---|---|---|
-|subImu|sub|sensor_msgs::Imu|imuTopic|imuHandler()|
-|subOdom|sub|nav_msgs::Odometry|odomTopic+"_incremental"|odometryHandler()|
-|subLaserCloud|sub|sensor_msgs::PointCloud2|pointCloudTopic|cloudHandler()|
-|pubExtractedCloud|pub|sensor_msgs::PointCloud2|lio_sam/deskew/cloud_deskewed|-|
-|pubLaserCloudInfo|pub|lio_sam::cloud_info>|lio_sam/deskew/cloud_info|-|
+|변수이름|sub/pub|topic type|topic name|callback|usage|
+|------|---|---|---|---|---|
+|subImu|sub|sensor_msgs::Imu|imuTopic|imuHandler()|-|
+|subOdom|sub|nav_msgs::Odometry|odomTopic+"_incremental"|odometryHandler()|-|
+|subLaserCloud|sub|sensor_msgs::PointCloud2|pointCloudTopic|cloudHandler()|-|
+|pubExtractedCloud|pub|sensor_msgs::PointCloud2|lio_sam/deskew/cloud_deskewed|-|visualize in rviz|
+|pubLaserCloudInfo|pub|lio_sam::cloud_info>|lio_sam/deskew/cloud_info|-|used in featureExtraction.cpp|
+
+뒤에 소개 되겠지만, cloud_info 의 message instance 인 cloudInfo.cloud_deskewed을 pubExtractedCloud에서 publish하고, cloud_info 을 pubLaserCloudInfo에서 publish한다. 
 
 ```cpp
 
@@ -519,7 +521,8 @@ void odomDeskewInfo()
 }
 ```
 
-### project
+### projectPointCloud()
+
 
 
 ```cpp
@@ -529,50 +532,179 @@ void projectPointCloud()
     // range image projection
     for (int i = 0; i < cloudSize; ++i)
     {
-        PointType thisPoint;
-        thisPoint.x = laserCloudIn->points[i].x;
-        thisPoint.y = laserCloudIn->points[i].y;
-        thisPoint.z = laserCloudIn->points[i].z;
-        thisPoint.intensity = laserCloudIn->points[i].intensity;
+        // 1. define (PointType thisPoint) (PointType is XYZI)
+        // 2. 포인트가 유효한지 체크
+            // lidarMinRange보다 작거나, lidarMaxRange보다 크면 무시
+            // ring channel 이 유효하지 않으면 무시 (N_SCAN기준 = lidar channel 수 기준)
+            // 만약 downsample 된 라이다 데이터를 사용하고 있었다면, downsampleRate의 정수배인지 체크
+        // 3. set columnIdn
+            // VELODYNE of OUSTER -> 3d lidar 
+                // thisPoint.x , thisPoint.y 를 기준으로 columnIdn을 할당
+            // LIVOX -> solid lidar
+                //  point array 순서대로 할당
+            // * N_SCAN은 z방향 채널수를 의미 (ex vlp 16 -> N_SCAN = 16)
+            // * HORIZION_SCAN은 xy방향 채널수를 의미 (ex default HORIZON_SCAN = 1800)
+        // 4. columnIdn 이나 rowIdn이 유효하지 않으면 무시
+            // columnIdn < 0 || columnIdn >= Horizon_SCAN 일때 무시
+            // rangeMat.at<float>(rowIdn, columnIdn) != FLT_MAX
+        // 5. deskew thisPoint
+        // 6. rangeMat 에 range할당
+            // range : 원점-thisPoint사이의 거리
+        // 7. fullCloud->points 에 point 할당
+            //
 
-        float range = pointDistance(thisPoint);
-        if (range < lidarMinRange || range > lidarMaxRange)
-            continue;
-
-        int rowIdn = laserCloudIn->points[i].ring;
-        if (rowIdn < 0 || rowIdn >= N_SCAN)
-            continue;
-
-        if (rowIdn % downsampleRate != 0)
-            continue;
-
-        int columnIdn = -1;
-        if (sensor == SensorType::VELODYNE || sensor == SensorType::OUSTER)
-        {
-            float horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
-            static float ang_res_x = 360.0/float(Horizon_SCAN);
-            columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
-            if (columnIdn >= Horizon_SCAN)
-                columnIdn -= Horizon_SCAN;
-        }
-        else if (sensor == SensorType::LIVOX)
-        {
-            columnIdn = columnIdnCountVec[rowIdn];
-            columnIdnCountVec[rowIdn] += 1;
-        }
-        
-        if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
-            continue;
-
-        if (rangeMat.at<float>(rowIdn, columnIdn) != FLT_MAX)
-            continue;
-
-        thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);
-
-        rangeMat.at<float>(rowIdn, columnIdn) = range;
-
-        int index = columnIdn + rowIdn * Horizon_SCAN;
-        fullCloud->points[index] = thisPoint;
     }
+}
+```
+3. set columnIdn
+```cpp
+int columnIdn = -1;
+if (sensor == SensorType::VELODYNE || sensor == SensorType::OUSTER)
+{
+    float horizonAngle = atan2(thisPoint.x, thisPoint.y) * 180 / M_PI;
+    static float ang_res_x = 360.0/float(Horizon_SCAN);
+    columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
+    if (columnIdn >= Horizon_SCAN)
+        columnIdn -= Horizon_SCAN;
+}
+else if (sensor == SensorType::LIVOX)
+{
+    columnIdn = columnIdnCountVec[rowIdn];
+    columnIdnCountVec[rowIdn] += 1;
+}
+```
+
+5. deskew thisPoint
+```cpp
+thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);
+```
+
+7. fullCloud->points 에 point 할당
+```cpp
+int index = columnIdn + rowIdn * Horizon_SCAN;
+fullCloud->points[index] = thisPoint;
+```
+
+### deskewPoint()
+deskewPoint()
+```cpp
+PointType deskewPoint(PointType *point, double relTime)
+{
+    // 1.deskewFlag 가 유효하지 않거나, imuDeskewInfo() 가 정상적으로 동작하지 않았으면, *point return
+    // 2. time을 기준으로 rotation, position interpolation
+        // findRotation() , findPosition()
+    // 3-1. first Point일 경우, transStartInverse 할당
+    // 3-2. 다른 point의 경우, fist Point 기준으로 relative Transformation Matrix 형성
+    // 4. relative Transformation Matrix을 기준으로 point 보정
+    return newpoint;
+}
+```
+
+2. rotation, position interpolation
+```cpp
+float rotXCur, rotYCur, rotZCur;
+findRotation(pointTime, &rotXCur, &rotYCur, &rotZCur);
+float posXCur, posYCur, posZCur;
+findPosition(relTime, &posXCur, &posYCur, &posZCur);
+```
+
+3-2 relative Transformation Matrix 
+```cpp
+Eigen::Affine3f transFinal = pcl::getTransformation(posXCur, posYCur, posZCur, rotXCur, rotYCur, rotZCur);
+Eigen::Affine3f transBt = transStartInverse * transFinal; // transStartInverse : firspoint Transfomation Matrix inverse
+```
+
+4. relative Transformation Matrix을 기준으로 point 보정
+```cpp
+PointType newPoint;
+newPoint.x = transBt(0,0) * point->x + transBt(0,1) * point->y + transBt(0,2) * point->z + transBt(0,3);
+newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
+newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
+newPoint.intensity = point->intensity;
+```
+
+### findRotation() and findPosition()
+findRotation()
+
+imuDeskewInfo() 에서 할당한 imuTime[], imuRotX[], imuRotY[], imuRotZ[]를 사용해서, pointTime포즈를 interpolation하는 코드
+```cpp
+void findRotation(double pointTime, float *rotXCur, float *rotYCur, float *rotZCur)
+{
+    *rotXCur = 0; *rotYCur = 0; *rotZCur = 0;
+    // 생략
+    if (pointTime > imuTime[imuPointerFront] || imuPointerFront == 0)
+    {
+        // 생략
+    } 
+    else {
+        // imuTime[imuPointerFront - 1] < pointTime < imuTime[imuPointerFront] 을 만족하는 imuPointerFront 을 찾음
+        int imuPointerBack = imuPointerFront - 1;
+        double ratioFront = (pointTime - imuTime[imuPointerBack]) / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+        double ratioBack = (imuTime[imuPointerFront] - pointTime) / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+        *rotXCur = imuRotX[imuPointerFront] * ratioFront + imuRotX[imuPointerBack] * ratioBack;
+        *rotYCur = imuRotY[imuPointerFront] * ratioFront + imuRotY[imuPointerBack] * ratioBack;
+        *rotZCur = imuRotZ[imuPointerFront] * ratioFront + imuRotZ[imuPointerBack] * ratioBack;
+    }
+}
+```
+findPosition()  
+odometry topic을 사용해서 position interpolation을 하지만, 기본코드에서는 0으로 세팅되어있음
+```cpp
+void findPosition(double relTime, float *posXCur, float *posYCur, float *posZCur)
+{
+    *posXCur = 0; *posYCur = 0; *posZCur = 0;
+
+    // If the sensor moves relatively slow, like walking speed, positional deskew seems to have little benefits. Thus code below is commented.
+
+    // if (cloudInfo.odomAvailable == false || odomDeskewFlag == false)
+    //     return;
+
+    // float ratio = relTime / (timeScanEnd - timeScanCur);
+
+    // *posXCur = ratio * odomIncreX;
+    // *posYCur = ratio * odomIncreY;
+    // *posZCur = ratio * odomIncreZ;
+}
+```
+
+### cloudExtraction()
+
+보정을 하면서 유효하지 않은 point cloud들을 필터링을 했었는데, 이 함수에서는 필터링된 pointcloud만 포함한 sensor_msg::Pointcloud2 객체 extractedCloud 를 만든다. 필터링이 된 포인트는 rangeMat 값이 FLT_MAX가 아니므로, FLT_MAX가 아닌 점들만 포함시키면 된다. 
+```cpp
+void cloudExtraction()
+{
+    int count = 0;
+    // extract segmented cloud for lidar odometry
+    for (int i = 0; i < N_SCAN; ++i)
+    {
+        cloudInfo.startRingIndex[i] = count - 1 + 5;
+
+        for (int j = 0; j < Horizon_SCAN; ++j)
+        {
+            if (rangeMat.at<float>(i,j) != FLT_MAX)
+            {
+                // mark the points' column index for marking occlusion later
+                cloudInfo.pointColInd[count] = j;
+                // save range info
+                cloudInfo.pointRange[count] = rangeMat.at<float>(i,j);
+                // save extracted cloud
+                extractedCloud->push_back(fullCloud->points[j + i*Horizon_SCAN]);
+                // size of extracted cloud
+                ++count;
+            }
+        }
+        cloudInfo.endRingIndex[i] = count -1 - 5;
+    }
+}
+```
+
+### publishClouds()
+필터링된 포인트클라우드 extractedCloud를 cloudInfo에 넣어서 publish한다.
+```cpp
+void publishClouds()
+{
+    cloudInfo.header = cloudHeader;
+    cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, extractedCloud, cloudHeader.stamp, lidarFrame);
+    pubLaserCloudInfo.publish(cloudInfo);
 }
 ```
