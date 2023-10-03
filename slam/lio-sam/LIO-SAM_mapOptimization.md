@@ -156,6 +156,16 @@ void laserCloudInfoHandler(const lio_sam::cloud_infoConstPtr& msgIn)
 ```
 
 ## updateInitailGuess()
+
+사용하는 변수들
+- cloudKeyPoses3D : saveKeyFramesAndFactor()에서 추가되고, correctPoses 에서 조정되는 변수. 현재 global map 에서 tracking되고 있는 frame 포즈들을 의미. 이 함수에서는 initial lidar frame인지 판단하기 위해 사용.
+- lastImuPreTransformation : updateInitialGuess()에서 incremental relative pose 를 게산하기 위해 사용하는 변수
+- transformTobeMapped : 현재 lidar frame 2 global map 간의 변환을 저장하는 변수. float[6] 형태. 이 함수의 목적임.
+
+아이디어  
+각 lidar frame 의 initial pose를 결정하는 함수. 첫 번째 라이다 프레임, 두 번째 라이다 프레임, 이후의 라이다 프레임, 세가지 상태로 나누어서 핸들링함.
+
+
 ```cpp
 void updateInitialGuess()
 {
@@ -164,6 +174,9 @@ void updateInitialGuess()
 
     static Eigen::Affine3f lastImuTransformation;
     // initialization
+
+    // 1. 첫번쨰 프레임(cloudKeyPoses3D->points.empty())인 경우 imu data 의 RPY를 사용해서 현재 프레임의 rotation을 초기화. 
+    // global map이 형성되지 않은 상태이므로, translation vector 는 0으로 초기화 한다. (lastImuTransformation = pcl::getTransformation(0, 0, 0,  ... )
     if (cloudKeyPoses3D->points.empty())
     {
         transformTobeMapped[0] = cloudInfo.imuRollInit;
@@ -203,6 +216,12 @@ void updateInitialGuess()
     }
 
     // use imu incremental estimation for pose guess (only rotation)
+    // imu 정보가 있을 경우
+    // transBack : T_wc ( latest lidar frame to world (world mean imu RPY))
+    // transIncre : T_lc (latest lidar frame to current lidar frame)
+
+    // transTobe : T_il
+    // transFinal : T_ic (initial lidar frame to current )
     if (cloudInfo.imuAvailable == true)
     {
         Eigen::Affine3f transBack = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit);
@@ -210,8 +229,7 @@ void updateInitialGuess()
 
         Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
         Eigen::Affine3f transFinal = transTobe * transIncre;
-        pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
-                                                        transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+        pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
 
         lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
         return;
@@ -223,6 +241,7 @@ void updateInitialGuess()
 ```cpp
 void extractSurroundingKeyFrames()
 {
+    // global map이 없다면, surrounding key frame 도 없는 것이므로 return
     if (cloudKeyPoses3D->points.empty() == true)
         return; 
     
